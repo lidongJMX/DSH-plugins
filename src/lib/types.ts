@@ -38,6 +38,10 @@ export interface Plugin {
   type: PluginType
   install: PluginInstall
   images: PluginImage[]
+  /** 是否入选「精选」（自动规则 + public/data/featured.json 手动覆盖，加载时注入） */
+  featured?: boolean
+  /** 精选推荐语（仅手动精选时存在） */
+  featuredReason?: string
 }
 
 export interface PluginData {

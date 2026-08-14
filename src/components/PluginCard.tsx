@@ -37,6 +37,19 @@ export default function PluginCard({ plugin: p }: { plugin: Plugin }) {
         <span className="sr-only">查看 {p.fullName} 详情</span>
       </Link>
 
+      {/* 精选徽章（不拦截点击，鼠标悬停展示推荐语） */}
+      {p.featured && (
+        <span
+          title={p.featuredReason || '精选插件'}
+          className="pointer-events-none absolute right-2 top-2 z-20 inline-flex items-center gap-1 rounded-full bg-gradient-to-r from-amber-400 to-amber-500 px-2 py-0.5 text-[10px] font-bold text-amber-950 shadow-sm"
+        >
+          <svg viewBox="0 0 24 24" className="h-3 w-3 fill-current" aria-hidden="true">
+            <path d="M12 2l2.9 6.26 6.86.8-5.07 4.7 1.36 6.76L12 17.1l-6.05 3.42 1.36-6.76-5.07-4.7 6.86-.8L12 2Z" />
+          </svg>
+          精选
+        </span>
+      )}
+
       {hero && (
         <div className="pointer-events-none h-28 overflow-hidden border-b border-gray-100 bg-gray-100 dark:border-gray-800 dark:bg-gray-800">
           <img

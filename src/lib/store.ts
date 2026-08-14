@@ -1,5 +1,6 @@
 import type { Plugin, PluginData } from './types'
 import { CATEGORY_LABEL, TYPE_META, type SortKey } from './constants'
+import { applyFeatured, fetchFeaturedConfig } from './featured'
 
 const base = import.meta.env.BASE_URL
 
@@ -10,7 +11,11 @@ async function doLoad(): Promise<PluginData> {
   if (!res.ok) {
     throw new Error(`数据加载失败（HTTP ${res.status}）—— 请先运行 npm run crawl 生成数据`)
   }
-  return (await res.json()) as PluginData
+  const data = (await res.json()) as PluginData
+  // 注入精选标记（自动规则 + featured.json 手动覆盖）
+  const featuredConfig = await fetchFeaturedConfig(base)
+  data.plugins = applyFeatured(data.plugins, featuredConfig)
+  return data
 }
 
 export function loadPlugins(): Promise<PluginData> {
@@ -45,6 +50,7 @@ export interface Filters {
   types: Plugin['type'][] | null // null = 全部类型
   language: string // '' = 不限
   sort: SortKey
+  featuredOnly?: boolean // true = 只看精选
 }
 
 export function filterPlugins(plugins: Plugin[], f: Filters): Plugin[] {
@@ -55,6 +61,7 @@ export function filterPlugins(plugins: Plugin[], f: Filters): Plugin[] {
     if (typeSet && !typeSet.has(p.type)) return false
     if (catSet.size > 0 && !catSet.has(p.category)) return false
     if (f.language && (p.language ?? '') !== f.language) return false
+    if (f.featuredOnly && !p.featured) return false
     if (terms.length > 0) {
       const hay = [
         p.name,

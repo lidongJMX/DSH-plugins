@@ -10,6 +10,7 @@ import {
   type SortKey,
 } from '../lib/constants'
 import { collectLanguages, filterPlugins, loadPlugins } from '../lib/store'
+import { FEATURED_STRIP_LIMIT } from '../lib/featured'
 import PluginCard from '../components/PluginCard'
 import Pagination from '../components/Pagination'
 
@@ -47,6 +48,7 @@ export default function ListPage() {
     return typesRaw.split(',').filter(Boolean) as PluginData['plugins'][number]['type'][]
   }, [typesRaw])
   const lang = searchParams.get('lang') ?? ''
+  const featuredOnly = searchParams.get('featured') === '1'
   const rawSort = searchParams.get('sort')
   const sort: SortKey = rawSort === 'stars' || rawSort === 'updated' || rawSort === 'name' ? rawSort : 'stars'
   const page = Math.max(1, Number(searchParams.get('page') ?? '1'))
@@ -82,6 +84,14 @@ export default function ListPage() {
   const plugins = state.status === 'ready' ? state.data.plugins : []
   const languages = useMemo(() => collectLanguages(plugins), [plugins])
 
+  /** 精选插件（按 Star 降序） */
+  const featuredPlugins = useMemo(
+    () => plugins.filter((p) => p.featured).sort((a, b) => b.stars - a.stars || a.name.localeCompare(b.name)),
+    [plugins],
+  )
+  /** 存在主动筛选时隐藏顶部精选区，避免干扰 */
+  const hasActiveFilter = q !== '' || cats.length > 0 || lang !== '' || featuredOnly
+
   const filtered = useMemo(
     () =>
       filterPlugins(plugins, {
@@ -90,8 +100,9 @@ export default function ListPage() {
         types,
         language: lang,
         sort,
+        featuredOnly,
       }),
-    [plugins, q, cats, types, lang, sort],
+    [plugins, q, cats, types, lang, sort, featuredOnly],
   )
 
   const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE))
@@ -143,6 +154,35 @@ export default function ListPage() {
           </span>
         </div>
       </div>
+
+      {/* 精选插件（顶部横滑区） */}
+      {!hasActiveFilter && featuredPlugins.length > 0 && (
+        <section aria-label="精选插件" className="mt-2">
+          <div className="flex items-baseline justify-between gap-2">
+            <h2 className="inline-flex items-center gap-1.5 text-sm font-bold">
+              <span className="text-amber-500" aria-hidden="true">★</span>
+              精选插件
+              <span className="text-xs font-normal text-gray-400 dark:text-gray-500">
+                {featuredPlugins.length} 个 · 每分类自动选 Star 前 3 + 手动精选
+              </span>
+            </h2>
+            <button
+              type="button"
+              onClick={() => update({ featured: '1' })}
+              className="shrink-0 text-xs font-medium text-brand hover:underline dark:text-brand-light"
+            >
+              查看全部精选 →
+            </button>
+          </div>
+          <div className="mt-3 flex snap-x gap-3 overflow-x-auto pb-2">
+            {featuredPlugins.slice(0, FEATURED_STRIP_LIMIT).map((p) => (
+              <div key={p.id} className="w-60 shrink-0 snap-start">
+                <PluginCard plugin={p} />
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
 
       {/* 搜索框 */}
       <div className="relative">
@@ -226,6 +266,18 @@ export default function ListPage() {
 
       {/* 分类 chips */}
       <div className="mt-3 flex flex-wrap gap-1.5">
+        <button
+          type="button"
+          onClick={() => update({ featured: featuredOnly ? null : '1' })}
+          aria-pressed={featuredOnly}
+          className={`rounded-full px-3 py-1 text-xs transition-colors ${
+            featuredOnly
+              ? 'bg-amber-400 font-semibold text-amber-950'
+              : 'bg-gray-100 text-gray-600 hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700'
+          }`}
+        >
+          ⭐ 只看精选{featuredOnly ? `（${featuredPlugins.length}）` : ''}
+        </button>
         <button
           type="button"
           onClick={() => update({ cat: null })}

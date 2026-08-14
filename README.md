@@ -7,6 +7,7 @@
 - 全量收录：GitHub `dsh-plugin` topic 全部仓库（当前约 900+），默认只展示插件类，可一键切换查看全部
 - 搜索 / 分类 / 类型 / 语言筛选 / 排序 / 分页
 - 每个插件：精简介绍 + 安装命令（一键复制）+ 多步安装说明 + 本地化截图画廊
+- **精选插件**：每分类自动选 Star 前 3 名 + 手动清单覆盖（`public/data/featured.json`），列表页顶部横滑区 + 卡片「精选」徽章 + 「只看精选」筛选
 - 深色模式、响应式布局
 - 纯静态站：构建期爬虫生成数据，GitHub Actions 每日定时刷新并部署到 GitHub Pages
 
@@ -35,6 +36,19 @@ npm run preview        # 本地预览构建产物
 ```
 
 > 可选：设置环境变量 `GITHUB_TOKEN` 可提升 Search API 限流；未设置也能运行（爬虫自带限速）。
+
+## 精选机制（Featured）
+
+「精选」由**自动规则 + 手动覆盖**共同决定，纯前端计算，无需重新爬虫：
+
+- **自动**：每个分类按 Star 取前 3 名（且 ≥50 star），见 `src/lib/featured.ts` 中 `FEATURED_PER_CATEGORY` / `FEATURED_MIN_STARS`。
+- **手动**：编辑 `public/data/featured.json` ——
+  - `include`：强制入选，可配 `reason` 推荐语（展示在卡片徽章悬停提示里）；
+  - `exclude`：从精选移除（覆盖自动与手动）；
+  - 未列出的插件自动按规则入选。
+- **展示**：列表页顶部「精选插件」横滑区（最多 12 张，见 `FEATURED_STRIP_LIMIT`）、卡片右上角金色「精选」徽章、分类行「只看精选」筛选（URL 参数 `featured=1`）。
+
+修改 `featured.json` 后直接 push 即可（无需重爬数据，部署即生效）。
 
 ## 数据是怎么来的
 
@@ -82,9 +96,10 @@ public/data/plugins.json（前端消费）
 scripts/crawl.mjs          数据爬虫（零依赖）
 data/                      爬虫缓存（repos/readmes/package-jsons，gitignore）
 public/data/plugins.json   最终数据集（构建期生成，gitignore）
+public/data/featured.json  精选手动配置（提交到 git，改完 push 即生效）
 public/plugins/            下载的插件图片（gitignore）
 src/                       前端源码
-  lib/                     类型 / 常量 / 数据加载与筛选逻辑
+  lib/                     类型 / 常量 / 精选规则 / 数据加载与筛选逻辑
   components/              通用组件（卡片/复制/分页/画廊…）
   pages/                   列表页与详情页
 .github/workflows/deploy.yml  CI/CD
