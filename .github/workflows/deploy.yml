@@ -3,6 +3,8 @@ name: Crawl & Deploy
 # 1) push 到 main 时构建并部署到 GitHub Pages
 # 2) 每天定时重爬数据并重新部署（数据保鲜）
 # 3) 可手动触发（Actions 页面 → Run workflow）
+#
+# 说明：所有 action 均使用基于 Node.js 24 运行时的版本（GitHub 已弃用 Node 20 运行时）。
 
 on:
   push:
@@ -24,16 +26,16 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5 # Node 24 运行时
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5 # Node 24 运行时
         with:
           node-version: 22
           cache: npm
 
       # 复用上次爬取的 README/package.json/图片缓存，增量更新
       - name: Restore crawler cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5 # Node 24 运行时
         with:
           path: |
             data/readmes
@@ -42,8 +44,12 @@ jobs:
             public/plugins
           key: dsh-crawl
 
+      # npm ci：把 lockfile 里的 registry 主机重写为官方源，避免依赖 npmmirror 的海外可达性
       - name: Install dependencies
         run: npm ci
+        env:
+          npm_config_registry: https://registry.npmjs.org
+          npm_config_replace_registry_host: always
 
       # 爬取全部 dsh-plugin 仓库数据（Search API 用仓库自带的 GITHUB_TOKEN）
       - name: Crawl plugin data
@@ -54,18 +60,24 @@ jobs:
       - name: Build static site
         run: npm run build
 
-      # 在 Action 内访问页面做冒烟测试：起本地静态服务器并检查首页与数据文件
+      # 在 Action 内访问页面做冒烟测试：起本地静态服务器，轮询等待就绪后检查关键资源
       - name: Smoke test (serve & curl inside the Action)
         run: |
-          npx vite preview --port 4173 &
-          sleep 4
-          curl -fsS -o /dev/null -w "index: %{http_code}\n" http://localhost:4173/
-          curl -fsS -o /dev/null -w "data:  %{http_code}\n" http://localhost:4173/data/plugins.json
+          npx vite preview --port 4173 --strictPort >/tmp/preview.log 2>&1 &
+          PID=$!
+          trap 'kill $PID 2>/dev/null || true' EXIT
+          for i in $(seq 1 20); do
+            if curl -fsS -o /dev/null http://localhost:4173/ 2>/dev/null; then break; fi
+            sleep 1
+          done
+          curl -fsS -o /dev/null -w "index:   %{http_code}\n" http://localhost:4173/
+          curl -fsS -o /dev/null -w "data:    %{http_code}\n" http://localhost:4173/data/plugins.json
           curl -fsS -o /dev/null -w "favicon: %{http_code}\n" http://localhost:4173/favicon.svg
+          curl -fsS -o /dev/null -w "image:   %{http_code}\n" http://localhost:4173/plugins/liustack/modlens/img-0.jpg
           echo "smoke test OK"
 
       - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v3
+        uses: actions/upload-pages-artifact@v5 # 新版 Pages artifact
         with:
           path: dist
 
@@ -78,4 +90,4 @@ jobs:
     steps:
       - name: Deploy to GitHub Pages
         id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5 # Node 24 运行时
