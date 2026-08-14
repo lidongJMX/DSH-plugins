@@ -39,8 +39,12 @@ npm run preview        # 本地预览构建产物
 ## 数据是怎么来的
 
 ```
-GitHub Search API (topic:dsh-plugin, 分页 + 1000 上限按创建时间窗口拆分)
-        │
+仓库发现（双源合并，按 full_name 去重）：
+  ① GitHub topic 页面 HTML 分页（github.com/topics/dsh-plugin，50 页×20，
+     实时列表，含搜索索引尚未收录的新 tag 仓库）
+  ② GitHub Search API（topic:dsh-plugin，单查询 1000 上限 →
+     按创建时间窗口拆分，ISO 时间戳粒度，可拆到小时级）
+        │  (CI 下额外用 REST API 补全 HTML-only 仓库的 forks/license/created 等元数据)
         ▼
 raw.githubusercontent.com/<owner>/<repo>/HEAD/<path>   ← HEAD 伪引用 = 默认分支，免 API 限流
         │

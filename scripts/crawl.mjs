@@ -90,7 +90,7 @@ async function fetchRetry(url, headers, opts = {}) {
 }
 
 /** 全局 Search API 节流：带 token 30 次/分 → 2.5s 间隔；无 token 10 次/分 → 7s 间隔 */
-const SEARCH_INTERVAL = TOKEN ? 2500 : 7000
+const SEARCH_INTERVAL = Number(process.env.SEARCH_INTERVAL_MS) || (TOKEN ? 2500 : 7000)
 let lastSearchAt = 0
 async function searchThrottle() {
   const now = Date.now()
@@ -125,8 +125,19 @@ async function fetchTopicRepos() {
 
   // GitHub Search API 单次查询最多返回 1000 条（超出翻页返回 422）。
   // 总数 > 1000 时，按创建时间把查询拆成多个窗口（各窗口独立受 1000 上限），
-  // 最后按 full_name 去重合并 —— 这是 Search API 上限的标准解法。
-  const MIN_DATE = '2015-01-01'
+  // 最后按 full_name 去重合并。窗口粒度用 ISO 时间戳 —— 溢出密集到单日时
+  // 仍可按小时继续拆分（实测 created:2026-08-13T00:00:00Z..T12:00:00Z 有效）。
+  const MIN_DATE = '2015-01-01T00:00:00Z'
+
+  function fmtISO(d) {
+    return d.toISOString().replace(/\.\d{3}Z$/, 'Z')
+  }
+
+  function midDate(from, to) {
+    const f = new Date(from).getTime()
+    const t = new Date(to).getTime()
+    return fmtISO(new Date(f + Math.floor((t - f) / 2)))
+  }
 
   async function searchWindow(query, opts = {}) {
     const items = []
@@ -148,12 +159,6 @@ async function fetchTopicRepos() {
     return { items, total }
   }
 
-  function midDate(from, to) {
-    const f = new Date(`${from}T00:00:00Z`).getTime()
-    const t = new Date(`${to}T00:00:00Z`).getTime()
-    return new Date(f + Math.floor((t - f) / 2)).toISOString().slice(0, 10)
-  }
-
   const seen = new Map()
   async function collectWindow(query, from, to, depth = 0) {
     // 先探测第一页拿 total_count：窗口 ≤1000 才全量下载，否则按创建时间二分
@@ -163,30 +168,187 @@ async function fetchTopicRepos() {
       for (const it of items) seen.set(it.full_name, it)
       return
     }
-    if (from >= to || depth >= 12) {
-      for (const it of probe.items) seen.set(it.full_name, it) // 兜底：单日窗口仍超限则取前 1000
+    if (from >= to || depth >= 24) {
+      // 已到最小粒度（或深度上限）仍超 1000：全量取该窗口前 1000 条兜底
+      const { items } = await searchWindow(query)
+      for (const it of items) seen.set(it.full_name, it)
       return
     }
     const mid = midDate(from, to)
+    if (mid === from || mid === to) {
+      // 中点无法再细分（毫秒级窗口），直接取前 1000 条
+      for (const it of probe.items) seen.set(it.full_name, it)
+      return
+    }
     console.log(`  [search] 窗口 ${from}..${to} 有 ${probe.total} 条（>1000），按创建时间拆分`)
     await collectWindow(`topic:dsh-plugin created:${from}..${mid}`, from, mid, depth + 1)
     await collectWindow(`topic:dsh-plugin created:${mid}..${to}`, mid, to, depth + 1)
   }
 
+  // 1) Topic 页面 HTML 分页（实时列表，包含搜索索引尚未收录的新 tag 仓库）
+  const htmlRepos = await fetchTopicHtmlRepos()
+  for (const r of htmlRepos) seen.set(r.full_name, r)
+
+  // 2) Search API（索引内全量，元数据更全，覆盖 HTML 同名条目）
   const top = await searchWindow('topic:dsh-plugin')
   for (const it of top.items) seen.set(it.full_name, it)
   if (top.total > 1000) {
-    const today = new Date().toISOString().slice(0, 10)
-    console.log(`[repos] 总数 ${top.total} 超过 1000 上限，按创建时间窗口补齐（当前 ${seen.size} 个）`)
-    await collectWindow(`topic:dsh-plugin created:${MIN_DATE}..${today}`, MIN_DATE, today)
+    const nowISO = fmtISO(new Date())
+    console.log(`[repos] 搜索总数 ${top.total} 超过 1000 上限，按创建时间窗口补齐（当前 ${seen.size} 个）`)
+    await collectWindow(`topic:dsh-plugin created:${MIN_DATE}..${nowISO}`, MIN_DATE, nowISO)
   }
-  const all = [...seen.values()]
+
+  // 3) 仅来自 HTML 的仓库，用 REST API 补全元数据（forks/license/created/homepage）
+  await enrichHtmlRepos([...seen.values()])
+
+  const all = [...seen.values()].map(({ _fromHtml, ...r }) => r)
   console.log(`[repos] 去重合并后：${all.length} 个仓库`)
   mkdirSync(DATA_DIR, { recursive: true })
   writeFileSync(cacheFile, JSON.stringify(all, null, 1))
   writeFileSync(cacheStamp, JSON.stringify({ fetchedAt: Date.now(), count: all.length }))
   console.log(`[repos] 完成：共 ${all.length} 个仓库`)
   return all
+}
+
+// ---- 1.5 topic 页面 HTML 爬取（github.com/topics/dsh-plugin，比 Search 索引更新）----
+
+const TOPIC_URL = 'https://github.com/topics/dsh-plugin'
+const HTML_UA = {
+  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36',
+  'Accept-Language': 'en-US,en;q=0.9',
+}
+const MAX_TOPIC_PAGES = 50 // topic 页面列表硬上限：50 页 × 20 = 1000（第 51 页起 404）
+const TOPIC_PAGE_DELAY = 2500 // 限速，避免 GitHub 拦截 HTML 抓取
+
+/** 抓取 topic 页面 HTML；404（分页结束）→ null，其他错误重试后抛出 */
+async function htmlGet(url) {
+  const res = await fetchRetry(url, HTML_UA, { maxAttempts: 3, baseDelay: 2000, timeout: 30_000 })
+  if (res.status === 404) return null
+  if (!res.ok) throw new Error(`html ${res.status}: ${url}`)
+  return res.text()
+}
+
+function parseCount(s) {
+  const t = s.trim().toLowerCase()
+  if (t.endsWith('k')) return Math.round(parseFloat(t) * 1000)
+  if (t.endsWith('m')) return Math.round(parseFloat(t) * 1e6)
+  return parseInt(t.replace(/[^\d]/g, ''), 10) || 0
+}
+
+function parseTopicPage(html) {
+  const cards = html.split('<article class="border rounded color-shadow-small color-bg-subtle tmp-my-4">').slice(1)
+  const repos = []
+  for (const card of cards) {
+    const repoMatch = card.match(/href="\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)"[^>]*class="Link text-bold wb-break-word"/)
+    if (!repoMatch) continue
+    const fullName = repoMatch[1]
+    const [owner, name] = fullName.split('/')
+    const descMatch = card.match(/<p class="color-fg-muted mb-0"[^>]*>([\s\S]*?)<\/p>/)
+    const starMatch = card.match(/class="Counter js-social-count">([^<]+)</)
+    const timeMatch = card.match(/<relative-time datetime="([^"]+)"/)
+    const topics = [...card.matchAll(/class="topic-tag[^"]*"[^>]*>([^<]+)<\/a>/g)].map((m) => m[1].trim())
+    // 语言：统计 ul 中非 "Updated/日期" 的项
+    let language = null
+    const ul = card.match(/<ul class="d-flex f6[\s\S]*?<\/ul>/)
+    if (ul) {
+      const items = [...ul[0].matchAll(/<li class="tmp-mr-4">\s*([\s\S]*?)<\/li>/g)]
+        .map((m) => m[1].replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim())
+        .filter(Boolean)
+      language = items.find((t) => !/^Updated\b/i.test(t)) ?? null
+    }
+    const ts = timeMatch ? new Date(timeMatch[1]).toISOString() : ''
+    repos.push({
+      full_name: fullName,
+      owner: { login: owner },
+      name,
+      html_url: `https://github.com/${fullName}`,
+      homepage: null,
+      description: descMatch ? descMatch[1].trim() : '',
+      language,
+      license: null,
+      topics,
+      stargazers_count: parseCount(starMatch ? starMatch[1] : '0'),
+      forks_count: 0,
+      created_at: '',
+      updated_at: ts,
+      pushed_at: ts,
+      _fromHtml: true,
+    })
+  }
+  return repos
+}
+
+async function fetchTopicHtmlRepos() {
+  const all = []
+  // 测试钩子：从本地文件读取 topic 页面 HTML（离线验证解析器，不走网络）
+  const fileOverride = process.env.TOPIC_HTML_FILE
+  if (fileOverride) {
+    const html = readFileSync(fileOverride, 'utf8')
+    const repos = parseTopicPage(html)
+    all.push(...repos)
+    console.log(`  [html] 本地文件测试（${fileOverride}）：解析出 ${repos.length} 个仓库`)
+    return all
+  }
+  for (let page = 1; page <= MAX_TOPIC_PAGES; page++) {
+    const url = page === 1 ? TOPIC_URL : `${TOPIC_URL}?page=${page}`
+    let html
+    try {
+      html = await htmlGet(url)
+    } catch (e) {
+      console.log(`  [html] page ${page} 失败：${e.message}（跳过，保留已抓数据）`)
+      continue
+    }
+    if (html === null) {
+      console.log(`  [html] page ${page}: 404 → 分页结束`)
+      break
+    }
+    const repos = parseTopicPage(html)
+    all.push(...repos)
+    console.log(`  [html] page ${page}: +${repos.length} (累计 ${all.length})`)
+    if (repos.length === 0) break
+    if (page < MAX_TOPIC_PAGES) await sleep(TOPIC_PAGE_DELAY)
+  }
+  return all
+}
+
+/** 仅来自 HTML 的仓库用 REST API 补全元数据（有 token 时才做，未鉴权 60 次/时不够用） */
+async function enrichHtmlRepos(repos) {
+  const targets = repos.filter((r) => r._fromHtml)
+  if (targets.length === 0 || !TOKEN) {
+    if (targets.length > 0) console.log(`[repos] ${targets.length} 个 HTML-only 仓库（无 token，跳过元数据补全）`)
+    return
+  }
+  console.log(`[repos] 用 REST API 补全 ${targets.length} 个 HTML-only 仓库的元数据…`)
+  let done = 0
+  const CONCURRENCY = 8
+  let cursor = 0
+  async function worker() {
+    for (;;) {
+      const i = cursor++
+      if (i >= targets.length) return
+      const r = targets[i]
+      try {
+        const res = await fetchRetry(`https://api.github.com/repos/${r.full_name}`, authHeaders(), { timeout: 20_000 })
+        if (res.ok) {
+          const d = await res.json()
+          r.forks_count = d.forks_count ?? 0
+          r.license = d.license ? { spdx_id: d.license.spdx_id } : null
+          r.created_at = d.created_at ?? ''
+          r.homepage = d.homepage ?? null
+          r.language = d.language ?? r.language
+          r.description = d.description ?? r.description
+          r.stargazers_count = d.stargazers_count ?? r.stargazers_count
+          r.updated_at = d.pushed_at ?? d.updated_at ?? r.updated_at
+        }
+      } catch {
+        // 单仓库补全失败不影响整体
+      }
+      done++
+      if (done % 50 === 0) console.log(`  [repos] 补全 ${done}/${targets.length}`)
+    }
+  }
+  await Promise.all(Array.from({ length: CONCURRENCY }, worker))
+  console.log(`  [repos] 元数据补全完成`)
 }
 
 // ---------------------------------------------------------------- 2. README / package.json

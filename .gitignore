@@ -6,3 +6,7 @@ public/data
 .firecrawl
 *.local
 .DS_Store
+
+# 无关的嵌入式仓库（勿提交）
+.baoyu-skills-src
+
