@@ -1,0 +1,29 @@
+{
+  "name": "dsh-plugin-hub",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "DSH 插件中心 —— DeepSeek Harness 插件目录站（静态站 + 构建期爬取）",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "crawl": "node scripts/crawl.mjs",
+    "crawl:force": "node scripts/crawl.mjs --force"
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-router-dom": "^6.28.0"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "autoprefixer": "^10.4.20",
+    "postcss": "^8.4.49",
+    "tailwindcss": "^3.4.15",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.11"
+  }
+}
