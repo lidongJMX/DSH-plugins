@@ -24,6 +24,7 @@ npm install
 # 1. 爬取数据（生成 public/data/plugins.json 与 public/plugins/ 下的图片）
 npm run crawl          # 增量（跳过已有缓存）
 npm run crawl:force    # 强制全量重爬
+node scripts/crawl.mjs --repos-only   # 只刷新仓库列表（快速）
 
 # 2. 启动开发服务器
 npm run dev            # http://localhost:5173

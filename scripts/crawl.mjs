@@ -103,19 +103,66 @@ async function fetchTopicRepos() {
     }
     console.log('[repos] 缓存超过 7 天，重新拉取')
   }
-  const all = []
-  let page = 1
-  for (;;) {
-    const url = `https://api.github.com/search/repositories?q=topic:dsh-plugin&sort=stars&order=desc&per_page=100&page=${page}`
-    const res = await fetchRetry(url, authHeaders())
-    if (!res.ok) throw new Error(`search API ${res.status}: ${url}`)
-    const data = await res.json()
-    all.push(...data.items)
-    console.log(`[repos] page ${page}: +${data.items.length} (累计 ${all.length}/${data.total_count})`)
-    if (data.items.length < 100 || all.length >= data.total_count) break
-    page++
-    if (!TOKEN) await sleep(7000) // 未鉴权 Search API 10 次/分
+
+  // GitHub Search API 单次查询最多返回 1000 条（超出翻页返回 422）。
+  // 总数 > 1000 时，按创建时间把查询拆成多个窗口（各窗口独立受 1000 上限），
+  // 最后按 full_name 去重合并 —— 这是 Search API 上限的标准解法。
+  const MIN_DATE = '2015-01-01'
+
+  async function searchWindow(query, opts = {}) {
+    const items = []
+    let page = 1
+    let total = 0
+    for (;;) {
+      const url = `https://api.github.com/search/repositories?q=${encodeURIComponent(query)}&sort=stars&order=desc&per_page=100&page=${page}`
+      const res = await fetchRetry(url, authHeaders())
+      if (!res.ok) throw new Error(`search API ${res.status}: ${url}`)
+      const data = await res.json()
+      total = data.total_count
+      items.push(...data.items)
+      console.log(`  [search] ${query}  page ${page}: +${data.items.length} (${items.length}/${total})`)
+      // Search API 单查询硬上限 1000 条：达到即停，不能翻到第 11 页（会 422）
+      if (opts.probe || data.items.length < 100 || items.length >= 1000 || items.length >= total) break
+      page++
+      if (!TOKEN) await sleep(7000) // 未鉴权 Search API 10 次/分
+    }
+    return { items, total }
   }
+
+  function midDate(from, to) {
+    const f = new Date(`${from}T00:00:00Z`).getTime()
+    const t = new Date(`${to}T00:00:00Z`).getTime()
+    return new Date(f + Math.floor((t - f) / 2)).toISOString().slice(0, 10)
+  }
+
+  const seen = new Map()
+  async function collectWindow(query, from, to, depth = 0) {
+    // 先探测第一页拿 total_count：窗口 ≤1000 才全量下载，否则按创建时间二分
+    const probe = await searchWindow(query, { probe: true })
+    if (probe.total <= 1000) {
+      const { items } = await searchWindow(query)
+      for (const it of items) seen.set(it.full_name, it)
+      return
+    }
+    if (from >= to || depth >= 12) {
+      for (const it of probe.items) seen.set(it.full_name, it) // 兜底：单日窗口仍超限则取前 1000
+      return
+    }
+    const mid = midDate(from, to)
+    console.log(`  [search] 窗口 ${from}..${to} 有 ${probe.total} 条（>1000），按创建时间拆分`)
+    await collectWindow(`topic:dsh-plugin created:${from}..${mid}`, from, mid, depth + 1)
+    await collectWindow(`topic:dsh-plugin created:${mid}..${to}`, mid, to, depth + 1)
+  }
+
+  const top = await searchWindow('topic:dsh-plugin')
+  for (const it of top.items) seen.set(it.full_name, it)
+  if (top.total > 1000) {
+    const today = new Date().toISOString().slice(0, 10)
+    console.log(`[repos] 总数 ${top.total} 超过 1000 上限，按创建时间窗口补齐（当前 ${seen.size} 个）`)
+    await collectWindow(`topic:dsh-plugin created:${MIN_DATE}..${today}`, MIN_DATE, today)
+  }
+  const all = [...seen.values()]
+  console.log(`[repos] 去重合并后：${all.length} 个仓库`)
   mkdirSync(DATA_DIR, { recursive: true })
   writeFileSync(cacheFile, JSON.stringify(all, null, 1))
   writeFileSync(cacheStamp, JSON.stringify({ fetchedAt: Date.now(), count: all.length }))
@@ -446,6 +493,12 @@ async function main() {
   mkdirSync(IMG_DIR, { recursive: true })
 
   const repos = await fetchTopicRepos()
+
+  // --repos-only：只刷新仓库列表并退出（便于快速验证 / 定时更新列表）
+  if (process.argv.includes('--repos-only')) {
+    console.log(`[repos-only] 完成：${repos.length} 个仓库，用时 ${Math.round((Date.now() - t0) / 1000)}s`)
+    return
+  }
 
   const plugins = []
   let done = 0
