@@ -32,6 +32,8 @@ const OUT_DIR = join(ROOT, 'public', 'data')
 
 const TOKEN = process.env.GITHUB_TOKEN ?? ''
 const FORCE = process.argv.includes('--force')
+// CI 定时刷新：强制重拉仓库列表（抓新插件/更新 Star），但 README/图片仍走缓存增量
+const FORCE_REPOS = process.env.FORCE_REPOS === '1'
 const UA = { 'User-Agent': 'dsh-plugin-hub-crawler' }
 
 // ---------------------------------------------------------------- 工具函数
@@ -111,7 +113,7 @@ async function rawGet(owner, repo, path) {
 async function fetchTopicRepos() {
   const cacheFile = join(DATA_DIR, 'repos.json')
   const cacheStamp = join(DATA_DIR, 'repos.meta.json')
-  if (!FORCE && existsSync(cacheFile) && existsSync(cacheStamp)) {
+  if (!FORCE && !FORCE_REPOS && existsSync(cacheFile) && existsSync(cacheStamp)) {
     const meta = JSON.parse(readFileSync(cacheStamp, 'utf8'))
     const ageDays = (Date.now() - meta.fetchedAt) / 86_400_000
     if (ageDays < 7) {

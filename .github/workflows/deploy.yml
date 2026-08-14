@@ -33,7 +33,9 @@ jobs:
           node-version: 22
           cache: npm
 
-      # 复用上次爬取的 README/package.json/图片缓存，增量更新
+      # 复用上次爬取的缓存，增量更新：
+      #   readmes / package-jsons / image-stamps / public/plugins 均为逐仓库缓存，
+      #   命中即跳过；repos.json 在每次运行都会被 FORCE_REPOS 强制刷新（抓新插件、更新 Star）
       - name: Restore crawler cache
         uses: actions/cache@v5 # Node 24 运行时
         with:
@@ -41,6 +43,7 @@ jobs:
             data/readmes
             data/package-jsons
             data/repos.json
+            data/image-stamps
             public/plugins
           key: dsh-crawl
 
@@ -51,10 +54,13 @@ jobs:
           npm_config_registry: https://registry.npmjs.org
           npm_config_replace_registry_host: always
 
-      # 爬取全部 dsh-plugin 仓库数据（Search API 用仓库自带的 GITHUB_TOKEN）
+      # 爬取全部 dsh-plugin 仓库数据：
+      #   FORCE_REPOS=1 每次重拉 topic 仓库列表（新插件/Star 保鲜），
+      #   README/package.json/图片走增量缓存；Search API 用仓库自带的 GITHUB_TOKEN
       - name: Crawl plugin data
         env:
           GITHUB_TOKEN: ${{ github.token }}
+          FORCE_REPOS: '1'
         run: node scripts/crawl.mjs
 
       - name: Build static site

@@ -39,7 +39,7 @@ npm run preview        # 本地预览构建产物
 ## 数据是怎么来的
 
 ```
-GitHub Search API (topic:dsh-plugin, 分页)
+GitHub Search API (topic:dsh-plugin, 分页 + 1000 上限按创建时间窗口拆分)
         │
         ▼
 raw.githubusercontent.com/<owner>/<repo>/HEAD/<path>   ← HEAD 伪引用 = 默认分支，免 API 限流
@@ -52,6 +52,18 @@ raw.githubusercontent.com/<owner>/<repo>/HEAD/<path>   ← HEAD 伪引用 = 默�
         ▼
 public/data/plugins.json（前端消费）
 ```
+
+## 数据刷新机制（GitHub Actions）
+
+| 触发时机 | 行为 |
+|---|---|
+| 首次 push（无缓存） | **全量拉取**：topic 列表 + 全部仓库 README/package.json + 图片下载 |
+| 之后每次 push | **增量**：`actions/cache` 恢复上次缓存（readmes / package-jsons / image-stamps / 图片），已处理的仓库直接跳过 |
+| 每天 03:17 UTC（cron） | 自动增量刷新，数据保鲜 |
+| Actions 页面手动 Run workflow | 同上 |
+
+- 每次运行都会用 `FORCE_REPOS=1` **强制重拉 topic 仓库列表**（抓新插件、更新 Star 数），README/package.json/图片则走增量缓存 —— 所以日常刷新是分钟级，不是全量重来。
+- 本地 `npm run crawl`（不带 `--force`）同理是增量；想强制全量用 `npm run crawl:force`。
 
 ## 部署到你的 GitHub
 
