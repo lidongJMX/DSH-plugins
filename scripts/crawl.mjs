@@ -44,7 +44,7 @@ function authHeaders() {
   return TOKEN ? { ...UA, Authorization: `token ${TOKEN}` } : { ...UA }
 }
 
-/** 通用 fetch：20s 超时 + 网络错误重试 + 429/5xx 退避；opts.raw 时 403 用短退避（raw CDN 限流温和） */
+/** 通用 fetch：20s 超时 + 网络错误重试 + 429/5xx 退避；403 一律按限流等待 Retry-After（raw 用短退避） */
 async function fetchRetry(url, headers, opts = {}) {
   const maxAttempts = opts.maxAttempts ?? 4
   let delay = opts.baseDelay ?? 1500
@@ -60,15 +60,22 @@ async function fetchRetry(url, headers, opts = {}) {
       continue
     }
     if (res.status === 200 || res.status === 404) return res
-    if (res.status === 403 && !TOKEN && !opts.raw) {
-      // 未鉴权 API 限流：GitHub 会返回 Retry-After 或 X-RateLimit-Reset
+    if (res.status === 403) {
+      if (opts.raw) {
+        // raw CDN 限流温和，短退避重试
+        const retryAfter = Number(res.headers.get('retry-after') ?? '')
+        await sleep(retryAfter > 0 ? retryAfter * 1000 : delay)
+        delay *= 2
+        continue
+      }
+      // API 403 = 限流：未鉴权 60 次/时、Search API 带 token 也仅 30 次/分
       const retryAfter = Number(res.headers.get('retry-after') ?? '')
       const wait = retryAfter > 0 ? retryAfter * 1000 : 60_000
       process.stderr.write(`  [rate-limit] wait ${Math.round(wait / 1000)}s (403)\n`)
       await sleep(wait)
       continue
     }
-    if (res.status === 429 || res.status >= 500 || (res.status === 403 && opts.raw)) {
+    if (res.status === 429 || res.status >= 500) {
       const retryAfter = Number(res.headers.get('retry-after') ?? '')
       const wait = retryAfter > 0 ? retryAfter * 1000 : delay
       await sleep(wait)
@@ -78,6 +85,16 @@ async function fetchRetry(url, headers, opts = {}) {
     return res
   }
   throw new Error(`fetch failed after retries: ${url}`)
+}
+
+/** 全局 Search API 节流：带 token 30 次/分 → 2.5s 间隔；无 token 10 次/分 → 7s 间隔 */
+const SEARCH_INTERVAL = TOKEN ? 2500 : 7000
+let lastSearchAt = 0
+async function searchThrottle() {
+  const now = Date.now()
+  const wait = SEARCH_INTERVAL - (now - lastSearchAt)
+  if (wait > 0) await sleep(wait)
+  lastSearchAt = Date.now()
 }
 
 /** 从 raw.githubusercontent.com 取文件（404 → null） */
@@ -114,6 +131,7 @@ async function fetchTopicRepos() {
     let page = 1
     let total = 0
     for (;;) {
+      await searchThrottle() // 全局限速：Search API 30 次/分（token）或 10 次/分（无 token）
       const url = `https://api.github.com/search/repositories?q=${encodeURIComponent(query)}&sort=stars&order=desc&per_page=100&page=${page}`
       const res = await fetchRetry(url, authHeaders())
       if (!res.ok) throw new Error(`search API ${res.status}: ${url}`)
@@ -124,7 +142,6 @@ async function fetchTopicRepos() {
       // Search API 单查询硬上限 1000 条：达到即停，不能翻到第 11 页（会 422）
       if (opts.probe || data.items.length < 100 || items.length >= 1000 || items.length >= total) break
       page++
-      if (!TOKEN) await sleep(7000) // 未鉴权 Search API 10 次/分
     }
     return { items, total }
   }
@@ -377,8 +394,18 @@ async function downloadImage(url, destDir, index) {
 }
 
 async function processImages(repo, readme) {
+  // 图片结果印记：处理过的仓库（含失败的）落 stamp，增量运行直接复用，
+  // 避免每次都重试下载失败的大图（如 user-attachments 403）。--force 才重处理。
+  const stamp = join(DATA_DIR, 'image-stamps', `${repo.owner.login}__${repo.name}.json`)
+  if (!FORCE && existsSync(stamp)) {
+    return JSON.parse(readFileSync(stamp, 'utf8'))
+  }
   const urls = collectImageUrls(readme, repo.owner.login, repo.name)
-  if (urls.length === 0) return []
+  if (urls.length === 0) {
+    mkdirSync(dirname(stamp), { recursive: true })
+    writeFileSync(stamp, '[]')
+    return []
+  }
   const destDir = join(IMG_DIR, repo.owner.login, repo.name)
   mkdirSync(destDir, { recursive: true })
   const images = []
@@ -395,6 +422,8 @@ async function processImages(repo, readme) {
       // 单张图片失败（超时/断连）不影响整个仓库
     }
   }
+  mkdirSync(dirname(stamp), { recursive: true })
+  writeFileSync(stamp, JSON.stringify(images))
   return images
 }
 
