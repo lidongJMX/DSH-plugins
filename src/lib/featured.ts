@@ -4,8 +4,6 @@ import type { Plugin } from './types'
 export const FEATURED_PER_CATEGORY = 3
 /** 自动精选的最低 Star 门槛（避免低质仓库进入精选） */
 export const FEATURED_MIN_STARS = 50
-/** 列表页顶部精选横滑区最多展示的卡片数（其余通过「只看精选」筛选查看） */
-export const FEATURED_STRIP_LIMIT = 12
 
 export interface FeaturedInclude {
   fullName: string
